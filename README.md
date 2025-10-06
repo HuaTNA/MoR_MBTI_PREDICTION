@@ -87,13 +87,15 @@ Access at **http://localhost:5000/**
 
 ---
 
-## 🧠 Author
+## 🧠 Authors
 **Hua Tan**  
 University of Toronto, Industrial Engineering & AI Minor  
 📍 Toronto, ON  
-**Kevin Li**
-University of Toronto, Computer Engineering
+
+**Kevin Li**  
+University of Toronto, Computer Engineering  
 📍 Toronto, ON  
+
 ---
 
 ## 📜 License
