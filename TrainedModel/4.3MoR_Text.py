@@ -162,21 +162,113 @@ class CSVDataset(Dataset):
         return item
 
 # ========================= Model =======================
-class TextMoRModel(nn.Module):
-    def __init__(self, model_name: str, num_classes: int, cache_dir: str|None=None, local_files_only=False):
+class ExpertBlock(nn.Module):
+    """A lightweight expert used within the MoR router."""
+
+    def __init__(self, hidden_size: int, dropout: float = 0.1):
         super().__init__()
-        load_kwargs = {}
-        if cache_dir: load_kwargs["cache_dir"] = cache_dir
-        if local_files_only: load_kwargs["local_files_only"] = True
+        self.net = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, hidden_size),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class TextMoRModel(nn.Module):
+    """
+    Text encoder with a Mixture-of-Recursions gating head.
+
+    The module stacks several recursive layers. Each layer contains a mixture of
+    experts and a learned depth gate. Given the current state `h_t`, we compute:
+
+        experts_t = {E_i(h_t)}           # expert proposals
+        w_t      = softmax(R_t(h_t))     # router over experts
+        proposal = sum_i w_t[i] * experts_t[i]
+        g_t      = sigmoid(D_t(h_t))     # depth gate
+        h_{t+1}  = g_t * proposal + (1 - g_t) * h_t
+
+    This allows the model to adaptively blend expert transformations across
+    different recursion depths. Setting the number of recursions to 1 reduces the
+    behaviour to a single MoE layer with residual gating.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        num_classes: int,
+        cache_dir: str | None = None,
+        local_files_only: bool = False,
+        num_recursions: int = 3,
+        num_experts: int = 4,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        if num_recursions < 1:
+            raise ValueError("num_recursions 必须 >= 1")
+        if num_experts < 1:
+            raise ValueError("num_experts 必须 >= 1")
+
+        load_kwargs: Dict[str, object] = {}
+        if cache_dir:
+            load_kwargs["cache_dir"] = cache_dir
+        if local_files_only:
+            load_kwargs["local_files_only"] = True
+
         self.encoder = AutoModel.from_pretrained(model_name, **load_kwargs)
         hidden = self.encoder.config.hidden_size
-        self.router = nn.Sequential(nn.Linear(hidden, hidden), nn.Tanh())  # placeholder MoR gate
-        self.classifier = nn.Linear(hidden, num_classes)
-    def forward(self, input_ids, attention_mask):
+
+        # Recursive mixture-of-experts blocks
+        self.recursions = nn.ModuleList(
+            [
+                nn.ModuleList([ExpertBlock(hidden, dropout) for _ in range(num_experts)])
+                for _ in range(num_recursions)
+            ]
+        )
+        self.routers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.LayerNorm(hidden),
+                    nn.Linear(hidden, hidden),
+                    nn.Tanh(),
+                    nn.Linear(hidden, num_experts),
+                )
+                for _ in range(num_recursions)
+            ]
+        )
+        self.depth_gates = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.LayerNorm(hidden),
+                    nn.Linear(hidden, hidden),
+                    nn.Tanh(),
+                    nn.Linear(hidden, 1),
+                )
+                for _ in range(num_recursions)
+            ]
+        )
+
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden),
+            nn.Linear(hidden, num_classes),
+        )
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         out = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
         h = out.last_hidden_state[:, 0]
-        gate = torch.sigmoid(self.router(h))
-        h = gate * h + (1 - gate) * h  # placeholder (no-op blend now)
+
+        for router, experts, gate_mlp in zip(self.routers, self.recursions, self.depth_gates):
+            # Compute expert proposals
+            expert_outputs = torch.stack([expert(h) for expert in experts], dim=1)
+            weights = torch.softmax(router(h), dim=-1).unsqueeze(-1)
+            proposal = torch.sum(weights * expert_outputs, dim=1)
+            gate = torch.sigmoid(gate_mlp(h))
+            h = gate * proposal + (1 - gate) * h
+
         return self.classifier(h)
 
 # =================== Label Smoothing CE =================
