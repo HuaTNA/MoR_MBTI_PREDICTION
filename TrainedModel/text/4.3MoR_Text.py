@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
@@ -34,9 +34,12 @@ hf_logging.set_verbosity_error()  # keep console clean
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+AMP_DEVICE_TYPE = "cuda"
+AMP_ENABLED = DEVICE.type == "cuda"
 
 # ============================= Config =============================
-DATA_ROOT = r"C:\Users\lnasl\Desktop\APS360\APS360\Data\TextData"
+DATA_ROOT = r"C:\APS360_project\MoR_MBTI_PREDICTION\data\TextData"  # set your data root here
+
 MODEL_NAME = "bert-base-uncased"
 MAX_LEN = 160
 BATCH_SIZE = 8
@@ -72,22 +75,30 @@ class MBTIDataset(Dataset):
     Reads .txt files from class folders. Each file is one sample.
     Tokenization is done on-the-fly for flexibility (simplifies DataLoader).
     """
-    def __init__(self, root, classes, tokenizer, max_len=MAX_LEN):
+    def __init__(self, root, classes, tokenizer, max_len=MAX_LEN, show_progress=True):
         self.samples, self.targets = [], []
         self.classes = classes
         self.tok = tokenizer
         self.max_len = max_len
+        split_name = os.path.basename(os.path.normpath(root))
+        file_index = []
         for idx, c in enumerate(classes):
             folder = os.path.join(root, c)
             if not os.path.isdir(folder): continue
             for f in os.listdir(folder):
                 if f.lower().endswith(".txt"):
-                    p = os.path.join(folder, f)
-                    with open(p, "r", encoding="utf-8", errors="ignore") as fp:
-                        text = fp.read().strip()
-                    if text:
-                        self.samples.append(text)
-                        self.targets.append(idx)
+                    file_index.append((os.path.join(folder, f), idx))
+
+        iterator = file_index
+        if show_progress and file_index:
+            iterator = tqdm(file_index, desc=f"Loading {split_name}", unit="file")
+
+        for path, label_idx in iterator:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fp:
+                text = fp.read().strip()
+            if text:
+                self.samples.append(text)
+                self.targets.append(label_idx)
 
     def __len__(self): return len(self.samples)
 
@@ -163,7 +174,7 @@ def train_epoch(model, loader, criterion, optimizer, scaler, scheduler=None):
     total, correct, loss_sum = 0, 0, 0
     for batch in tqdm(loader, desc="Train"):
         batch = {k: v.to(DEVICE, non_blocking=True) for k, v in batch.items()}
-        with autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
+        with autocast(device_type=AMP_DEVICE_TYPE, enabled=AMP_ENABLED):
             logits = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
             loss = criterion(logits, batch['labels'])
         optimizer.zero_grad(set_to_none=True)
@@ -184,17 +195,17 @@ def eval_epoch(model, loader, criterion):
     model.eval()
     total, correct, loss_sum = 0, 0, 0
     preds_all, labels_all = [], []
-    with autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
-        for batch in tqdm(loader, desc="Eval"):
-            batch = {k: v.to(DEVICE, non_blocking=True) for k, v in batch.items()}
+    for batch in tqdm(loader, desc="Eval"):
+        batch = {k: v.to(DEVICE, non_blocking=True) for k, v in batch.items()}
+        with autocast(device_type=AMP_DEVICE_TYPE, enabled=AMP_ENABLED):
             logits = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
             loss = criterion(logits, batch['labels'])
-            preds = logits.argmax(1)
-            total += batch['labels'].size(0)
-            correct += preds.eq(batch['labels']).sum().item()
-            loss_sum += loss.item() * batch['labels'].size(0)
-            preds_all += preds.cpu().tolist()
-            labels_all += batch['labels'].cpu().tolist()
+        preds = logits.argmax(1)
+        total += batch['labels'].size(0)
+        correct += preds.eq(batch['labels']).sum().item()
+        loss_sum += loss.item() * batch['labels'].size(0)
+        preds_all += preds.cpu().tolist()
+        labels_all += batch['labels'].cpu().tolist()
     return loss_sum / total, correct / total, preds_all, labels_all
 
 # ============================= Unfreezing Helpers =============================
@@ -236,7 +247,10 @@ def main():
 
     mk_loader = lambda split, tf_batch: DataLoader(
         MBTIDataset(os.path.join(DATA_ROOT, split), classes, tokenizer),
-        batch_size=tf_batch, shuffle=(split=="train"), num_workers=4, pin_memory=True
+        batch_size=tf_batch,
+        shuffle=(split == "train"),
+        num_workers=4 if AMP_ENABLED else 0,
+        pin_memory=AMP_ENABLED,
     )
     train_loader = mk_loader("train", BATCH_SIZE)
     val_loader   = mk_loader("val",   BATCH_SIZE)
@@ -251,7 +265,7 @@ def main():
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=INIT_LR, steps_per_epoch=len(train_loader), epochs=EPOCHS
     )
-    scaler = GradScaler()
+    scaler = GradScaler(device=AMP_DEVICE_TYPE, enabled=AMP_ENABLED)
 
     best_acc, best_state = 0.0, None
     log_file = os.path.join(DATA_ROOT, "text_train_log.txt")

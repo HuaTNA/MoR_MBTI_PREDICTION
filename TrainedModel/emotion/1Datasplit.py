@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 
 # Define source and target paths
-source_path = r"C:\Users\lnasl\Desktop\APS360\APS360\Data\Face_emotion\Combined"
+source_path = r"C:\APS360_project\MoR_MBTI_PREDICTION\mbti_1.csv"
 target_path = r"C:\Users\lnasl\Desktop\APS360\APS360\Data\Preprocess"
 
 # Create directories for train, validation, and test sets

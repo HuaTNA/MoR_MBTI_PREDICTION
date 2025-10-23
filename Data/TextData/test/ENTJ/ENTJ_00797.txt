@@ -1,0 +1,1 @@
+One single thread can be quite enough for the NTP matters in question. Just rename it or create a new one and you'll get your result. Simple as that.

@@ -1,0 +1,1 @@
+Self-selected samples are non probability samples. You can't actually pull valid statistical inferences from them.
