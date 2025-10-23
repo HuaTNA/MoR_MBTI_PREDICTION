@@ -1,1 +1,0 @@
-The descriptions at best are stereotypes of a type. Its better to focus on which functions you use rather than the description of the type.

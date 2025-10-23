@@ -1,1 +1,0 @@
-0% = 100% sensor 25% = 50% sensor 50% = Borderline 75% = 50% intuitive 100% = 100% intuitive It usually works this way.

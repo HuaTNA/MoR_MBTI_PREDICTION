@@ -1,0 +1,20 @@
+# Ignore data folders
+Data/
+MBTI_Dataset/
+TextData/
+
+# Ignore Python cache & virtual env
+__pycache__/
+*.pyc
+.venv/
+
+# Ignore logs and temporary outputs
+*.log
+*.tmp
+*.out
+*.csv
+
+# (Optional) Ignore model checkpoints
+*.pt
+*.pth
+*.ckpt

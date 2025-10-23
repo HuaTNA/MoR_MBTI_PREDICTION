@@ -1,1 +1,0 @@
-I'm making my way through Real World Haskell- Real World Haskell It's quite enlightening learning Haskell.
